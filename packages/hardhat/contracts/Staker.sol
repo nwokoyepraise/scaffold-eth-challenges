@@ -1,62 +1,76 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.4;
 
-//import "hardhat/console.sol";
-import "./ExampleExternalContract.sol"; //https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/access/Ownable.sol
+pragma solidity 0.8.4;
+
+import "./ExampleExternalContract.sol";
 
 contract Staker {
+    ExampleExternalContract public exampleExternalContract;
 
-  ExampleExternalContract public exampleExternalContract;
+    mapping(address => uint256) public balances;
 
-  constructor(address exampleExternalContractAddress) {
-    exampleExternalContract = ExampleExternalContract(exampleExternalContractAddress);
-    deadline = block.timestamp + 1 days;
-  }
+    uint256 public constant threshold = 1 ether;
 
-  mapping (address => uint) public balances;
+    uint256 public deadline = block.timestamp + 72 hours;
 
-  uint public constant threshold = 1 ether;
+    bool public openForWithdraw;
 
-  uint public immutable deadline;
+    event Stake(address indexed sender, uint256 amount);
 
-  event Stake (
-    address staker,
-    uint amount
-  );
+    constructor(address exampleExternalContractAddress) {
+        exampleExternalContract = ExampleExternalContract(
+            exampleExternalContractAddress
+        );
+    }
 
-  modifier afterDeadline() {
-    require(block.timestamp < deadline, "Deadline has not been reached");
-    _;
-  }
-  
-  modifier notCompleted() {
-    require(!exampleExternalContract.completed(), "Deadline has been reached");
-    _;
-  }
+    modifier deadlineReached(bool requireReached) {
+        uint256 timeRemaining = timeLeft();
+        if (requireReached) {
+            require(timeRemaining == 0, "Deadline is not reached yet");
+        } else {
+            require(timeRemaining > 0, "Deadline is already reached");
+        }
+        _;
+    }
 
-  function stake() payable external {
-    require (block.timestamp < deadline, "Stake period is over");
-    balances[msg.sender] += msg.value;
-    emit Stake(msg.sender, msg.value);
-  }
+    modifier stakeIncomplete() {
+        bool completed = exampleExternalContract.completed();
+        require(!completed, "staking process already completed");
+        _;
+    }
 
-  function execute() external notCompleted afterDeadline {
-    require(address(this).balance >= threshold, "Threshold is not met");
+    function stake() public payable stakeIncomplete  deadlineReached(false) {
+        // Track the balance
+        balances[msg.sender] += msg.value;
 
-    exampleExternalContract.complete{value: address(this).balance}();
-  }
+        // Emit the staking balance
+        emit Stake(msg.sender, msg.value);
+    }
 
-  function withdraw() external notCompleted afterDeadline {
-    require(address(this).balance < threshold, "Threshhold met");
+    function execute() public stakeIncomplete deadlineReached(true) {
+        uint256 contractBal = address(this).balance;
 
-    uint amount = balances[msg.sender];
-    balances[msg.sender] = 0;
-    (bool ok, ) = payable(msg.sender).call{value: amount}("");
-    require(ok);
-  }
+        if (contractBal > threshold) {
+            exampleExternalContract.complete{value: address(this).balance}();
+        } else if (contractBal > threshold) {
+            openForWithdraw = true;
+        }
+    }
 
-  function timeLeft() public view returns (uint left) {
-    if (block.timestamp < deadline) left = deadline - block.timestamp;
-  }
+    function timeLeft() public view returns (uint256 timeleft) {
+        if (block.timestamp >= deadline) {
+            return 0;
+        } else {
+            return deadline - block.timestamp;
+        }
+    }
 
+    function withdraw() public stakeIncomplete deadlineReached(true) {
+        uint256 userBalance = balances[msg.sender];
+        require(userBalance > 0, "You don't have balance to withdraw");
+
+        balances[msg.sender] = 0;
+        (bool sent, ) = msg.sender.call{value: userBalance}("");
+        require(sent, "Transfer failed");
+    }
 }
